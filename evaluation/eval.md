@@ -99,15 +99,17 @@ python evaluation/sample_prompts_from_coco_val.py \
 Image generation based on the sampled prompts.
 
 ```shell
-python evaluation/run_geneval_mmada.py \
-  --prompts-jsonl /data/haoyuhuang/mmada_t2i_50/prompts_50.jsonl \
-  --outdir /data/haoyuhuang/mmada_t2i_50/images \
+CUDA_VISIBLE_DEVICES=7 python evaluation/run_geneval_mmada.py \
+  --prompts-jsonl /data/haoyuhuang/mmada_t2i_50_linear_CFG/prompts_50.jsonl \
+  --outdir /data/haoyuhuang/mmada_t2i_50_linear_CFG/images \
   --model-path /data/haoyuhuang/model/models--Gen-Verse--MMaDA-8B-Base/snapshots/065b30692dd6a2d0560d280d264e5e0092c05bc4 \
   --vq-model-path showlab/magvitv2 \
   --num-images-per-prompt 1 \
   --steps 30 \
-  --guidance-scale 3.5 \
-  --scheduler cosine
+  --guidance-scale 6 \
+  --scheduler cosine \
+  --remasking low_confidence \
+  --cfg-schedule linear_decay 
 ```
 
 CLIP score.
@@ -119,4 +121,17 @@ python evaluation/clip_score.py \
   --clip-pretrained openai \
   --batch-size 64 \
   --score-scale 100
+```
+
+Result:
+```json
+{
+  "num_pairs": 50,
+  "mean_cosine": 0.24989932298660278,
+  "score_scale": 100.0,
+  "clip_score": 24.98993229866028,
+  "clip_model": "ViT-L-14",
+  "clip_pretrained": "openai",
+  "device": "cuda"
+}
 ```

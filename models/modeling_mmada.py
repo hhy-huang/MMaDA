@@ -553,6 +553,8 @@ class MMadaModelLM(LLaDAModelLM):
             temperature=1.0,
             timesteps=18,  # ideal number of steps is 18 in maskgit paper
             guidance_scale=0,
+            cfg_schedule="static",
+            remasking="low_confidence",
             noise_schedule=cosine_schedule,
             generator: torch.Generator = None,
             config=None,
@@ -594,9 +596,14 @@ class MMadaModelLM(LLaDAModelLM):
                 logits = self(model_input, attention_bias=attention_bias).logits 
                 # print(f"logits.shape: {logits.shape}")
                 cond_logits, uncond_logits = torch.chunk(logits, 2, dim=0)
-                # logits = uncond_logits + guidance_scale * (cond_logits - uncond_logits)
-                # it seems that muse has a different cfg setting
-                logits = (1 + guidance_scale) * cond_logits - guidance_scale * uncond_logits
+                # Dynamic CFG: stronger guidance in early steps, weaker in late steps.
+                if cfg_schedule == "linear_decay":
+                    current_guidance = guidance_scale * (1.0 - step / timesteps)
+                elif cfg_schedule == "cosine_decay":
+                    current_guidance = guidance_scale * math.cos((math.pi / 2) * (step / timesteps))
+                else:
+                    current_guidance = guidance_scale
+                logits = (1 + current_guidance) * cond_logits - current_guidance * uncond_logits
                 logits = logits[:, -(num_vq_tokens + 1):-1, len(uni_prompting.text_tokenizer) + num_new_special_tokens: len(uni_prompting.text_tokenizer) + num_new_special_tokens + codebook_size]
             else:
                 attention_bias = (attention_mask[:, :, None] & attention_mask[:, None, :]).bool().unsqueeze(1)
@@ -626,12 +633,27 @@ class MMadaModelLM(LLaDAModelLM):
             # determined by mask_ratio * unknown_number_in_the_beginning.
             ratio = 1.0 * (step + 1) / timesteps
             mask_ratio = noise_schedule(torch.tensor(ratio))
-            # Computes the probabilities of each selected tokens.
-            selected_probs = torch.gather(probs, -1, sampled_ids.long()[..., None])
-            selected_probs = selected_probs.squeeze(-1)
+            # Computes confidence for each selected token according to remasking strategy.
+            selected_probs = torch.gather(probs, -1, sampled_ids.long()[..., None]).squeeze(-1)
+            if remasking == "low_confidence":
+                token_confidence = selected_probs
+            elif remasking == "random":
+                token_confidence = torch.rand_like(selected_probs)
+            elif remasking == "entropy":
+                entropy = -torch.sum(
+                    probs.to(torch.float64) * torch.log(probs.to(torch.float64) + 1e-9), dim=-1
+                ).to(selected_probs.dtype)
+                token_confidence = -entropy
+            elif remasking == "margin":
+                top2_probs, _ = torch.topk(probs, 2, dim=-1)
+                token_confidence = top2_probs[:, :, 0] - top2_probs[:, :, 1]
+            else:
+                raise NotImplementedError(f"Unsupported remasking strategy: {remasking}")
 
             # Ignores the tokens given in the input by overwriting their confidence.
-            selected_probs = torch.where(unknown_map, selected_probs, torch.finfo(selected_probs.dtype).max)
+            token_confidence = torch.where(
+                unknown_map, token_confidence, torch.finfo(token_confidence.dtype).max
+            )
             # Gets mask lens for each sample in the batch according to the mask ratio.
             mask_len = (num_vq_tokens * mask_ratio).floor().unsqueeze(0).to(logits.device)
             # Keeps at least one of prediction in this round and also masks out at least
@@ -642,7 +664,16 @@ class MMadaModelLM(LLaDAModelLM):
             # print(f"mask_len: {mask_len}, mask_len.shape: {mask_len.shape}")
             # Adds noise for randomness
             temperature = temperature * (1.0 - ratio)
-            masking = mask_by_random_topk(mask_len, selected_probs, temperature, generator=generator)
+            if remasking in ("low_confidence", "random"):
+                masking = mask_by_random_topk(mask_len, token_confidence, temperature, generator=generator)
+            else:
+                noise = torch.rand_like(token_confidence) * temperature
+                ranking_score = token_confidence + noise
+                masking = torch.zeros_like(unknown_map, dtype=torch.bool)
+                for b in range(ranking_score.shape[0]):
+                    k = int(mask_len[b].item())
+                    _, mask_indices = torch.topk(ranking_score[b], k=k, largest=False)
+                    masking[b, mask_indices] = True
             # Masks tokens with lower confidence.
             input_ids[:, -(num_vq_tokens + 1):-1] = torch.where(masking, mask_token_id,
                                                           sampled_ids + len(uni_prompting.text_tokenizer)

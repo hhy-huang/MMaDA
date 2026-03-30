@@ -24,6 +24,18 @@ def parse_args():
     parser.add_argument("--steps", type=int, default=15)
     parser.add_argument("--guidance-scale", type=float, default=3.5)
     parser.add_argument("--scheduler", type=str, default="cosine", choices=["cosine", "sigmoid", "linear"])
+    parser.add_argument(
+        "--cfg-schedule",
+        type=str,
+        default="static",
+        choices=["static", "linear_decay", "cosine_decay"],
+    )
+    parser.add_argument(
+        "--remasking",
+        type=str,
+        default="low_confidence",
+        choices=["low_confidence", "random", "entropy", "margin"],
+    )
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--end-index", type=int, default=-1)
     parser.add_argument("--seed", type=int, default=42)
@@ -63,7 +75,19 @@ def build_runtime(model_path: str, vq_model_path: str, device: str):
 
 
 @torch.no_grad()
-def generate_one_image(prompt_text, model, vq_model, uni_prompting, mask_id, steps, guidance_scale, scheduler, device):
+def generate_one_image(
+    prompt_text,
+    model,
+    vq_model,
+    uni_prompting,
+    mask_id,
+    steps,
+    guidance_scale,
+    cfg_schedule,
+    scheduler,
+    remasking,
+    device,
+):
     image_tokens = torch.ones((1, 1024), dtype=torch.long, device=device) * mask_id
     input_ids, attention_mask = uni_prompting(([prompt_text], image_tokens), "t2i_gen")
 
@@ -82,6 +106,8 @@ def generate_one_image(prompt_text, model, vq_model, uni_prompting, mask_id, ste
         temperature=1.0,
         timesteps=steps,
         guidance_scale=guidance_scale,
+        cfg_schedule=cfg_schedule,
+        remasking=remasking,
         noise_schedule=noise_schedule,
         noise_type="mask",
         seq_len=1024,
@@ -115,6 +141,8 @@ def main():
 
     total = end_index - start_index + 1
     print(f"Generating {total} prompts on {device}")
+    print(f"Remasking strategy: {args.remasking}")
+    print(f"CFG schedule: {args.cfg_schedule}")
 
     for i, idx in enumerate(range(start_index, end_index + 1), 1):
         meta = prompts[idx]
@@ -136,7 +164,17 @@ def main():
                 torch.cuda.manual_seed_all(seed)
 
             img = generate_one_image(
-                prompt, model, vq_model, uni_prompting, mask_id, args.steps, args.guidance_scale, args.scheduler, device
+                prompt,
+                model,
+                vq_model,
+                uni_prompting,
+                mask_id,
+                args.steps,
+                args.guidance_scale,
+                args.cfg_schedule,
+                args.scheduler,
+                args.remasking,
+                device,
             )
             img.save(sample_dir / f"{sample_id}.png")
 
