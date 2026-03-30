@@ -49,6 +49,9 @@ DATASET_CONFIGS = {
 
 ### 1.4 Run VLM Evaluation
 ```bash
+# Put VLMEvalKit datasets under /data/haoyuhuang/data/MMaDA
+export LMUData=/data/haoyuhuang/data/MMaDA/LMUData
+
 # Single GPU
 CUDA_VISIBLE_DEVICES=0 python run.py --data {dataset_name} --model MMaDA-MixCoT
 
@@ -80,5 +83,40 @@ bash eval.sh
 
 We use [GenEval](https://github.com/djghosh13/geneval) to evaluate the text to image generation capabilities of MMaDA. Please refer to the [GenEval](https://github.com/djghosh13/geneval) for specific instructions.
 
+## 3. Text to image generation (hhy implemented)
+
+Sample 50 prompts from COCO-VAL.
+
+```shell
+LMUData=/data/haoyuhuang/data/MMaDA/LMUData \
+python evaluation/sample_prompts_from_coco_val.py \
+  --out-jsonl /data/haoyuhuang/mmada_t2i_50/prompts_50.jsonl \
+  --num-prompts 50 \
+  --seed 42
+```
 
 
+Image generation based on the sampled prompts.
+
+```shell
+python evaluation/run_geneval_mmada.py \
+  --prompts-jsonl /data/haoyuhuang/mmada_t2i_50/prompts_50.jsonl \
+  --outdir /data/haoyuhuang/mmada_t2i_50/images \
+  --model-path /data/haoyuhuang/model/models--Gen-Verse--MMaDA-8B-Base/snapshots/065b30692dd6a2d0560d280d264e5e0092c05bc4 \
+  --vq-model-path showlab/magvitv2 \
+  --num-images-per-prompt 1 \
+  --steps 30 \
+  --guidance-scale 3.5 \
+  --scheduler cosine
+```
+
+CLIP score.
+
+```shell
+python evaluation/clip_score.py \
+  --pairs-jsonl /data/haoyuhuang/mmada_t2i_50/pairs.jsonl \
+  --clip-model ViT-L-14 \
+  --clip-pretrained openai \
+  --batch-size 64 \
+  --score-scale 100
+```
