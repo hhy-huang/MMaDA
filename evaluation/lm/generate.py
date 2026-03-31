@@ -258,6 +258,17 @@ def get_transfer_index(logits, temperature, remasking, mask_index, x, num_transf
         p = F.softmax(logits.to(torch.float64), dim=-1)
         x0_p = torch.squeeze(
             torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+    elif remasking == 'entropy':
+        p = F.softmax(logits.to(torch.float64), dim=-1)
+        # compute entropy, the larger the entropy, the more uncertain, set confidence to negative entropy
+        entropy = -torch.sum(p * torch.log(p + 1e-9), dim=-1)
+        x0_p = -entropy 
+    elif remasking == 'margin':
+        p = F.softmax(logits.to(torch.float64), dim=-1)
+        top2_probs, _ = torch.topk(p, 2, dim=-1)
+        # the larger the difference between Top1 and Top2, the more confident
+        margin = top2_probs[:, :, 0] - top2_probs[:, :, 1]
+        x0_p = margin
     elif remasking == 'random':
         x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
     else:

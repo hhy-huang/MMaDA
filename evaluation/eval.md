@@ -116,7 +116,8 @@ CLIP score.
 
 ```shell
 python evaluation/clip_score.py \
-  --pairs-jsonl /data/haoyuhuang/mmada_t2i_50/pairs.jsonl \
+  --images-dir /data/haoyuhuang/mmada_t2i_50_entropy/images \
+  --pairs-jsonl /data/haoyuhuang/mmada_t2i_50_entropy/pairs.jsonl \
   --clip-model ViT-L-14 \
   --clip-pretrained openai \
   --batch-size 64 \
@@ -124,14 +125,12 @@ python evaluation/clip_score.py \
 ```
 
 Result:
-```json
-{
-  "num_pairs": 50,
-  "mean_cosine": 0.24989932298660278,
-  "score_scale": 100.0,
-  "clip_score": 24.98993229866028,
-  "clip_model": "ViT-L-14",
-  "clip_pretrained": "openai",
-  "device": "cuda"
-}
-```
+
+CLIP scores on **COCO-VAL** summary table (CLIP=`ViT-L-14/openai`, score_scale=`100`, device=`cuda`, num_pairs=`50`):
+
+| Remasking | CFG schedule | CLIP score |
+|---|---|---|
+| low_confidence | fixed (static) | 24.99 |
+| entropy (high entropy) | fixed (static) | 24.92 |
+| margin (low margin) | fixed (static) | **25.30** |
+| low_confidence | linear_decay | 24.60 |
