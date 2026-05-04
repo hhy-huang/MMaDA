@@ -21,7 +21,7 @@ def get_gpu_list():
 RANK = int(os.environ.get('RANK', 0))
 WORLD_SIZE = int(os.environ.get('WORLD_SIZE', 1))
 LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE",1))
-LOCAL_RANK = int(os.environ.get("LOCAL_RANK",1))
+LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
 
 GPU_LIST = get_gpu_list()
 if LOCAL_WORLD_SIZE > 1 and len(GPU_LIST):
@@ -185,6 +185,16 @@ You can launch the evaluation by setting either --data and --model or --config.
     parser.add_argument('--judge', type=str, default=None)
     # Logging Utils
     parser.add_argument('--verbose', action='store_true')
+    # Optional dataset slicing for quick experiments
+    parser.add_argument('--max-samples', type=int, default=-1, help='Evaluate only first N samples after optional filtering')
+    parser.add_argument('--sub-category', type=str, default=None, help='Filter dataset by sub_category column if present')
+    # Optional MMaDA generation overrides (compatible naming with t2i script)
+    parser.add_argument('--steps', type=int, default=None, help='MMaDA MMU decoding steps override')
+    parser.add_argument('--guidance-scale', type=float, default=None, help='MMaDA MMU cfg_scale override')
+    parser.add_argument('--remasking', type=str, default=None, choices=['low_confidence', 'random'],
+                        help='MMaDA MMU remasking strategy override')
+    parser.add_argument('--scheduler', type=str, default=None, help='Accepted for CLI compatibility; ignored in MMU eval')
+    parser.add_argument('--cfg-schedule', type=str, default=None, help='Accepted for CLI compatibility; ignored in MMU eval')
     # Configuration for Resume
     # Ignore: will not rerun failed VLM inference
     parser.add_argument('--ignore', action='store_true', help='Ignore failed indices. ')
@@ -240,10 +250,45 @@ def main():
                     logger.warning(f'FWD_API is set, will use class `GPT4V` for {m}')
 
     if WORLD_SIZE > 1:
+        import torch
         import torch.distributed as dist
+        # After the per-rank CUDA_VISIBLE_DEVICES slice above, each process only sees one GPU as cuda:0.
+        if torch.cuda.is_available():
+            torch.cuda.set_device(0)
         dist.init_process_group(
             backend='nccl',
             timeout=datetime.timedelta(seconds=int(os.environ.get('DIST_TIMEOUT', 3600)))
+        )
+
+    # Apply per-dataset overrides to MMaDA model kwargs, if requested.
+    if args.steps is not None or args.guidance_scale is not None or args.remasking is not None:
+        mmada_override = {}
+        if args.steps is not None:
+            mmada_override['steps'] = args.steps
+        if args.guidance_scale is not None:
+            mmada_override['cfg_scale'] = args.guidance_scale
+        if args.remasking is not None:
+            mmada_override['remasking'] = args.remasking
+
+        for m in args.model:
+            if m in supported_VLM and 'MMaDA' in m:
+                model_entry = supported_VLM[m]
+                if hasattr(model_entry, 'keywords'):
+                    kws = cp.deepcopy(model_entry.keywords)
+                    custom_cfg = cp.deepcopy(kws.get('custom_configs', {}))
+                    for d in args.data:
+                        per_dataset = cp.deepcopy(custom_cfg.get(d, {}))
+                        per_dataset.update(mmada_override)
+                        custom_cfg[d] = per_dataset
+                    kws['custom_configs'] = custom_cfg
+                    supported_VLM[m] = partial(model_entry.func, **kws)
+                    if RANK == 0:
+                        logger.info(f'Applied MMaDA overrides for {m}: {mmada_override}')
+
+    if (args.scheduler is not None or args.cfg_schedule is not None) and RANK == 0:
+        logger.warning(
+            '--scheduler/--cfg-schedule are currently only used in t2i generation script '
+            '(evaluation/run_geneval_mmada.py); they are ignored in VLMEvalKit MMU evaluation.'
         )
 
     for _, model_name in enumerate(args.model):
@@ -296,6 +341,32 @@ def main():
                     if dataset is None:
                         logger.error(f'Dataset {dataset_name} is not valid, will be skipped. ')
                         continue
+
+                if hasattr(dataset, 'data') and isinstance(dataset.data, pd.DataFrame):
+                    if args.sub_category is not None:
+                        if 'sub_category' not in dataset.data.columns:
+                            logger.warning(
+                                f'--sub-category is set to "{args.sub_category}" but dataset {dataset_name} '
+                                'has no `sub_category` column, skipping this filter.'
+                            )
+                        else:
+                            before = len(dataset.data)
+                            dataset.data = dataset.data[dataset.data['sub_category'] == args.sub_category].reset_index(drop=True)
+                            if 'index' in dataset.data.columns:
+                                dataset.data['index'] = np.arange(len(dataset.data))
+                            logger.info(
+                                f'Applied sub_category filter "{args.sub_category}" on {dataset_name}: '
+                                f'{before} -> {len(dataset.data)} samples.'
+                            )
+                    if args.max_samples is not None and args.max_samples > 0:
+                        before = len(dataset.data)
+                        dataset.data = dataset.data.head(args.max_samples).reset_index(drop=True)
+                        if 'index' in dataset.data.columns:
+                            dataset.data['index'] = np.arange(len(dataset.data))
+                        logger.info(
+                            f'Applied max-samples={args.max_samples} on {dataset_name}: '
+                            f'{before} -> {len(dataset.data)} samples.'
+                        )
 
                 # Handling Multi-Turn Dataset
                 if dataset.TYPE == 'MT':

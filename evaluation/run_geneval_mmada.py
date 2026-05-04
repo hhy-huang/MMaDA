@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -40,6 +41,18 @@ def parse_args():
     parser.add_argument("--end-index", type=int, default=-1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default=None, choices=[None, "cuda", "cpu"])
+    parser.add_argument(
+        "--flat-output-dir",
+        type=str,
+        default=None,
+        help="Optional directory to save flat indexed images (e.g., 1.png..N.png) for WISE eval",
+    )
+    parser.add_argument(
+        "--flat-index-base",
+        type=int,
+        default=1,
+        help="Start index for flat image names, default 1 => 1.png",
+    )
     return parser.parse_args()
 
 
@@ -123,6 +136,7 @@ def generate_one_image(
 
 def main():
     args = parse_args()
+    run_start = time.perf_counter()
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but not available.")
@@ -135,6 +149,9 @@ def main():
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    flat_output_dir = Path(args.flat_output_dir) if args.flat_output_dir else None
+    if flat_output_dir is not None:
+        flat_output_dir.mkdir(parents=True, exist_ok=True)
 
     tokenizer, model, vq_model, uni_prompting = build_runtime(args.model_path, args.vq_model_path, device)
     mask_id = tokenizer.mask_token_id if getattr(tokenizer, "mask_token_id", None) is not None else 126336
@@ -143,8 +160,10 @@ def main():
     print(f"Generating {total} prompts on {device}")
     print(f"Remasking strategy: {args.remasking}")
     print(f"CFG schedule: {args.cfg_schedule}")
+    generated_images = 0
 
     for i, idx in enumerate(range(start_index, end_index + 1), 1):
+        prompt_start = time.perf_counter()
         meta = prompts[idx]
         prompt = (meta.get("prompt") or "").strip()
         if not prompt:
@@ -177,10 +196,22 @@ def main():
                 device,
             )
             img.save(sample_dir / f"{sample_id}.png")
+            if flat_output_dir is not None and sample_id == 0:
+                flat_idx = args.flat_index_base + (idx - start_index)
+                img.save(flat_output_dir / f"{flat_idx}.png")
+            generated_images += 1
 
-        print(f"[{i}/{total}] idx={idx}")
+        prompt_elapsed = time.perf_counter() - prompt_start
+        print(f"[{i}/{total}] idx={idx} | prompt_time={prompt_elapsed:.2f}s")
 
+    total_elapsed = time.perf_counter() - run_start
+    avg_prompt_time = total_elapsed / total if total > 0 else 0.0
+    avg_image_time = total_elapsed / generated_images if generated_images > 0 else 0.0
     print(f"Done: {outdir}")
+    print(
+        f"Timing summary | total={total_elapsed:.2f}s | "
+        f"avg_per_prompt={avg_prompt_time:.2f}s | avg_per_image={avg_image_time:.2f}s"
+    )
 
 
 if __name__ == "__main__":

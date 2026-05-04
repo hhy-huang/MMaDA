@@ -1,3 +1,15 @@
+import os
+
+# Force Hugging Face / Transformers caches under /data.
+# Must be set before any from_pretrained() calls (this file loads VQ_MODEL at import time).
+HF_CACHE_DIR = "/data/haoyuhuang/.cache"
+os.makedirs(HF_CACHE_DIR, exist_ok=True)
+os.environ.setdefault("HF_HOME", HF_CACHE_DIR)
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE", os.path.join(HF_CACHE_DIR, "huggingface", "hub"))
+os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(HF_CACHE_DIR, "huggingface", "transformers"))
+os.environ.setdefault("XDG_CACHE_HOME", HF_CACHE_DIR)
+os.environ.setdefault("TORCH_HOME", os.path.join(HF_CACHE_DIR, "torch"))
+
 import gradio as gr
 import torch
 import numpy as np
@@ -166,7 +178,7 @@ def get_highlighted_text_tuples(current_x_ids_batch, prompt_input_ids, prompt_le
     return intermediate_tuples
 
 @torch.no_grad()
-def generate_viz_wrapper_t2i(prompt_text, steps, guidance_scale, mask_schedule="cosine"):
+def generate_viz_wrapper_t2i(prompt_text, steps, guidance_scale, remasking_strategy="low_confidence", mask_schedule="cosine"):
     global MODEL, TOKENIZER, MASK_ID, DEVICE, uni_prompting
 
     if MODEL is None or TOKENIZER is None or MASK_ID is None:
@@ -195,6 +207,7 @@ def generate_viz_wrapper_t2i(prompt_text, steps, guidance_scale, mask_schedule="
             temperature=1.0,
             timesteps = steps,
             guidance_scale = guidance_scale,
+            remasking = remasking_strategy,
             noise_schedule = mask_schedule,
             noise_type = "mask",
             seq_len = 1024,
@@ -607,9 +620,12 @@ color_map_config = {
     "GEN": "#DCABFA",       
 }
 
-theme = gr.themes.Ocean(
-    primary_hue="fuchsia",
-)
+# Gradio theme: Ocean may not exist across versions; keep backward compatible.
+try:
+    theme = gr.themes.Ocean(primary_hue="fuchsia")
+except AttributeError:
+    # Fallback to Soft theme (available in older/newer gradio versions).
+    theme = gr.themes.Soft(primary_hue="fuchsia")
 with gr.Blocks(css=css_styles, theme=theme) as demo:
 # with gr.Blocks(css=css_styles, theme=gr.themes.Soft(primary_hue=gr.themes.colors.blue, secondary_hue=gr.themes.colors.sky)) as demo:
 # with gr.Blocks() as demo:
@@ -665,7 +681,7 @@ with gr.Blocks(css=css_styles, theme=theme) as demo:
                 elem_id="live-update-scrollable-box",
             )
             # gr.Markdown("## Final Generated Text")
-            output_final_text_box_lm = gr.Textbox(label="Final Output", lines=8, interactive=False, show_copy_button=True)
+            output_final_text_box_lm = gr.Textbox(label="Final Output", lines=8, interactive=False)
 
 
 
@@ -718,45 +734,48 @@ with gr.Blocks(css=css_styles, theme=theme) as demo:
                 elem_id="live-update-scrollable-box",
             )
             gr.Markdown("## Final Generated Text")
-            output_final_text_box_mmu = gr.Textbox(label="Final Output", lines=8, interactive=False, show_copy_button=True)
+            output_final_text_box_mmu = gr.Textbox(label="Final Output", lines=8, interactive=False)
 
 
-    gr.Examples(
-        examples=[
-            [
-                "mmu_validation_2/sunflower.jpg",
-                "Please describe this image in detail.",
-                256,
-                512,
-                128,
-                1,
-                0,
-                "low_confidence"
+    mmu_examples = [
+        [
+            "mmu_validation_2/sunflower.jpg",
+            "Please describe this image in detail.",
+            256,
+            512,
+            128,
+            1,
+            0,
+            "low_confidence",
+        ],
+        [
+            "mmu_validation_2/woman.jpg",
+            "Please describe this image in detail.",
+            256,
+            512,
+            128,
+            1,
+            0,
+            "low_confidence",
+        ],
+    ]
+    mmu_examples = [ex for ex in mmu_examples if os.path.exists(ex[0])]
+    if mmu_examples:
+        gr.Examples(
+            examples=mmu_examples,
+            inputs=[
+                image_upload_box,
+                prompt_input_box_mmu,
+                steps_slider_mmu,
+                gen_length_slider_mmu,
+                block_length_slider_mmu,
+                temperature_slider_mmu,
+                cfg_scale_slider_mmu,
+                remasking_dropdown_mmu,
             ],
-            [
-                "mmu_validation_2/woman.jpg", 
-                "Please describe this image in detail.",
-                256,
-                512,
-                128,
-                1,
-                0,
-                "low_confidence"
-            ]
-        ],
-        inputs=[
-            image_upload_box,
-            prompt_input_box_mmu,
-            steps_slider_mmu,
-            gen_length_slider_mmu,
-            block_length_slider_mmu,
-            temperature_slider_mmu,
-            cfg_scale_slider_mmu,
-            remasking_dropdown_mmu
-        ],
-        outputs=[output_visualization_box_mmu, output_final_text_box_mmu],
-        fn=generate_viz_wrapper,
-    )
+            outputs=[output_visualization_box_mmu, output_final_text_box_mmu],
+            fn=generate_viz_wrapper,
+        )
 
     gr.Markdown("---")
     gr.Markdown("## Part 3. Text-to-Image Generation")
@@ -768,7 +787,12 @@ with gr.Blocks(css=css_styles, theme=theme) as demo:
                 with gr.Row():
                     steps_slider_t2i = gr.Slider(minimum=5, maximum=100, value=15, step=5, label="Total Sampling Steps", info="Must be divisible by (gen_length / block_length).")
                     guidance_scale_slider_t2i = gr.Slider(minimum=0.0, maximum=7.0, value=3.5, step=0.5, label="Guidance Scale", info="Classifier-Free Guidance. 0 disables it.")
-            
+                with gr.Row():
+                    remasking_dropdown_t2i = gr.Dropdown(
+                        choices=["low_confidence", "random", "entropy", "margin"],
+                        value="low_confidence",
+                        label="Remasking Strategy",
+                    )
             
             with gr.Row():
                 scheduler_radio_t2i = gr.Radio(
@@ -789,10 +813,10 @@ with gr.Blocks(css=css_styles, theme=theme) as demo:
 
     gr.Examples(
         examples=[
-            ["A sea turtle swimming near a coral reef in the ocean, with a clear blue sky and water in the background.", 15, 3.5, "cosine"],
-            ["A beautiful sunset over a calm ocean, with a few clouds in the sky.", 15, 3.5, "cosine"]
+            ["A sea turtle swimming near a coral reef in the ocean, with a clear blue sky and water in the background.", 15, 3.5, "low_confidence", "cosine"],
+            ["A beautiful sunset over a calm ocean, with a few clouds in the sky.", 15, 3.5, "low_confidence", "cosine"]
         ],
-        inputs=[prompt_input_box_t2i, steps_slider_t2i, guidance_scale_slider_t2i, scheduler_radio_t2i],
+        inputs=[prompt_input_box_t2i, steps_slider_t2i, guidance_scale_slider_t2i, remasking_dropdown_t2i, scheduler_radio_t2i],
         outputs=[output_image_t2i, output_status_t2i],
         fn=generate_viz_wrapper_t2i,
     )
@@ -803,6 +827,7 @@ with gr.Blocks(css=css_styles, theme=theme) as demo:
             prompt_input_box_t2i,
             steps_slider_t2i,
             guidance_scale_slider_t2i,
+            remasking_dropdown_t2i,
             scheduler_radio_t2i
         ],
         outputs=[output_image_t2i, output_status_t2i]
@@ -891,4 +916,5 @@ with gr.Blocks(css=css_styles, theme=theme) as demo:
 
 if __name__ == "__main__":
     print(f"Starting Gradio App. Attempting to use device: {DEVICE}")
+    demo.queue()
     demo.launch(share=True)

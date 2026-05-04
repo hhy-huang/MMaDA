@@ -1420,8 +1420,16 @@ flash_vl = {
 mmada = {
     "MMaDA-MixCoT": partial(
         MMaDA, 
-        model_path="Gen-Verse/MMaDA-8B-MixCoT",
-        tokenizer_path="/Gen-Verse/MMaDA-8B-MixCoT",
+        model_path="/data/haoyuhuang/model/models--Gen-Verse--MMaDA-8B-MixCoT/snapshots/3ee0085f0c42541f1134aae30482954451952406",
+        tokenizer_path="/data/haoyuhuang/model/models--Gen-Verse--MMaDA-8B-MixCoT/snapshots/3ee0085f0c42541f1134aae30482954451952406",
+        vq_model_path="showlab/magvitv2",
+        vq_model_type="magvitv2",
+        resolution=512,
+    ),
+    "MMaDA-Base": partial(
+        MMaDA, 
+        model_path="/data/haoyuhuang/model/models--Gen-Verse--MMaDA-8B-Base/snapshots/065b30692dd6a2d0560d280d264e5e0092c05bc4",
+        tokenizer_path="/data/haoyuhuang/model/models--Gen-Verse--MMaDA-8B-Base/snapshots/065b30692dd6a2d0560d280d264e5e0092c05bc4",
         vq_model_path="showlab/magvitv2",
         vq_model_type="magvitv2",
         resolution=512,
